@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Freshdesk Stats</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">📊</span>
+      <h1>Freshdesk Stats</h1>
+      <span id="domainBadge" class="badge hidden"></span>
+    </div>
+    <div class="controls">
+      <label class="range-label">
+        Window
+        <select id="rangeSelect" title="Time window (by last update)">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </label>
+      <button id="refreshBtn" class="btn" title="Reload data">↻ Refresh</button>
+      <button id="settingsBtn" class="btn btn-ghost" title="Settings">⚙ Settings</button>
+    </div>
+  </header>
+
+  <div id="statusBar" class="status-bar hidden"></div>
+
+  <main id="app">
+    <!-- Empty state: shown when no credentials are saved -->
+    <section id="emptyState" class="empty-state">
+      <div class="empty-card">
+        <h2>Connect your Freshdesk account</h2>
+        <p>Enter your Freshdesk domain and API key to load your stats. Your
+           key is stored only in this browser and is sent through your own
+           Cloudflare proxy — never to anyone else.</p>
+        <button id="emptyConnectBtn" class="btn btn-primary">Open Settings</button>
+      </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section id="dashboard" class="hidden">
+      <div id="kpis" class="kpi-grid"></div>
+
+      <div class="chart-grid">
+        <div class="card">
+          <h3>Status</h3>
+          <canvas id="chartStatus"></canvas>
+        </div>
+        <div class="card">
+          <h3>Priority</h3>
+          <canvas id="chartPriority"></canvas>
+        </div>
+        <div class="card card-wide">
+          <h3>Tickets created per day</h3>
+          <canvas id="chartVolume"></canvas>
+        </div>
+        <div class="card">
+          <h3>Source</h3>
+          <canvas id="chartSource"></canvas>
+        </div>
+        <div class="card">
+          <h3>Top groups</h3>
+          <canvas id="chartGroups"></canvas>
+        </div>
+        <div class="card card-wide">
+          <h3>Top agents</h3>
+          <canvas id="chartAgents"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="footerNote">Data is fetched live into your browser. Nothing is stored on a server.</span>
+  </footer>
+
+  <!-- Settings modal -->
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Settings</h2>
+        <button id="closeSettings" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span>Freshdesk domain</span>
+          <input id="domainInput" type="text" placeholder="acme  (or acme.freshdesk.com)" autocomplete="off" />
+          <small>Just the part before <code>.freshdesk.com</code>.</small>
+        </label>
+        <label class="field">
+          <span>API key</span>
+          <span class="key-row">
+            <input id="apiKeyInput" type="password" placeholder="Your Freshdesk API key" autocomplete="off" />
+            <button id="toggleKey" type="button" class="icon-btn" title="Show/hide">👁</button>
+          </span>
+          <small>Profile settings → your avatar → Profile Settings in Freshdesk shows your API key.</small>
+        </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="field">
+            <span>Proxy URL</span>
+            <input id="proxyInput" type="text" placeholder="https://freshdesk-proxy.spades09.workers.dev" autocomplete="off" />
+            <small>The Cloudflare Worker that relays requests. Change only if you renamed it.</small>
+          </label>
+        </details>
+        <div id="testResult" class="test-result hidden"></div>
+      </div>
+      <div class="modal-foot">
+        <button id="testBtn" class="btn">Test connection</button>
+        <button id="saveBtn" class="btn btn-primary">Save &amp; load</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/vendor/chart.umd.min.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
