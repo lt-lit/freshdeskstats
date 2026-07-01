@@ -125,12 +125,10 @@ async function fetchTickets(windowDays, onProgress) {
   return fetchPaged(path, { onProgress });
 }
 async function fetchGroups() {
-  try { return await fetchPaged("/api/v2/groups", { maxPages: 10 }); }
-  catch { return []; }
+  return fetchPaged("/api/v2/groups", { maxPages: 10 });
 }
 async function fetchAgents() {
-  try { return await fetchPaged("/api/v2/agents", { maxPages: 20 }); }
-  catch { return []; }
+  return fetchPaged("/api/v2/agents", { maxPages: 20 });
 }
 
 /* ---------- aggregation ---------- */
@@ -346,26 +344,44 @@ async function loadDashboard() {
 
   try {
     showStatus("Loading tickets…", "info");
-    const [groups, agents] = await Promise.all([fetchGroups(), fetchAgents()]);
-    const tickets = await fetchTickets(windowDays, (n) => showStatus(`Loaded ${n} tickets…`, "info"));
 
-    if (tickets.length === 0) {
-      showStatus(`No tickets updated in the last ${windowDays} days.`, "info");
-      renderKpis({ total: 0, open: 0, pending: 0, resolved: 0, closed: 0 });
-      renderCharts(aggregate([], groups, agents, windowDays));
-      return;
+    // Groups and agents are used to label IDs. They may require higher
+    // permissions than tickets, so load them tolerantly and report failures
+    // instead of silently showing raw IDs.
+    let groups = [], agents = [];
+    const warnings = [];
+    const [gRes, aRes] = await Promise.allSettled([fetchGroups(), fetchAgents()]);
+    if (gRes.status === "fulfilled") groups = gRes.value;
+    else warnings.push(`group names failed (${gRes.reason.message})`);
+    if (aRes.status === "fulfilled") {
+      agents = aRes.value;
+      if (agents.length === 0) warnings.push("agent names: the agents list came back empty — this API key probably can't list agents (use an admin's API key, or I can add a manual name map)");
+    } else {
+      warnings.push(`agent names failed: ${aRes.reason.message}`);
     }
+
+    const tickets = await fetchTickets(windowDays, (n) => showStatus(`Loaded ${n} tickets…`, "info"));
 
     const agg = aggregate(tickets, groups, agents, windowDays);
     renderKpis(agg.kpis);
     renderCharts(agg);
 
+    if (tickets.length === 0) {
+      showStatus(`No tickets updated in the last ${windowDays} days.`, "info");
+      return;
+    }
+
     let msg = `Showing ${agg.total} tickets updated in the last ${windowDays} days.`;
     const ad = agg.agentDaily;
     if (ad.agentCount > ad.shown) msg += ` Agent chart shows the top ${ad.shown} of ${ad.agentCount} agents.`;
-    if (agg.capped) msg += " (Capped at the fetch limit — narrow the window for full accuracy.)";
-    showStatus(msg, agg.capped ? "info" : "success");
-    setTimeout(() => { if (!agg.capped) clearStatus(); }, 4000);
+    if (agg.capped) msg += " Capped at the fetch limit — narrow the window for full accuracy.";
+
+    if (warnings.length) {
+      showStatus(`${msg}  ⚠ ${warnings.join("; ")}.`, "error");
+    } else {
+      showStatus(msg, "success");
+      setTimeout(() => clearStatus(), 4000);
+    }
   } catch (err) {
     showStatus(err.message || "Something went wrong loading data.", "error");
   } finally {
