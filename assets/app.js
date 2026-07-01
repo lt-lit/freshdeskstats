@@ -16,6 +16,8 @@ const LS = {
   domain: "fd_domain",
   apiKey: "fd_apikey",
   proxy: "fd_proxy",
+  agentMap: "fd_agentmap",   // { "<agentId>": "Name", ... }
+  seenAgents: "fd_seen_agents", // [<agentId>, ...] observed in the last load
 };
 
 const STATUS_MAP = { 2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed" };
@@ -57,6 +59,12 @@ function hasCredentials() {
   const s = getSettings();
   return Boolean(s.domain && s.apiKey);
 }
+// Manual agent-ID → name overrides (used when the API can't list agents).
+function getAgentMap() {
+  try { return JSON.parse(localStorage.getItem(LS.agentMap) || "{}"); }
+  catch { return {}; }
+}
+
 // Accept "acme", "acme.freshdesk.com", or a full URL — return the bare label.
 function normalizeDomain(raw) {
   let d = (raw || "").trim().toLowerCase();
@@ -182,11 +190,14 @@ function agentDailyResolved(tickets, agentName, windowDays) {
 
   const MAX_LINES = 12;
   const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  let unnamed = 0;
   const datasets = ranked.slice(0, MAX_LINES).map(([aid], i) => {
     const m = counts.get(aid);
     const color = colorFor(i);
+    const name = agentName.get(aid);
+    if (name == null) unnamed++;
     return {
-      label: agentName.get(aid) || `Agent ${aid}`,
+      label: name || `Agent ${aid}`,
       data: days.map((d) => m.get(d) || 0),
       borderColor: color,
       backgroundColor: color,
@@ -196,12 +207,37 @@ function agentDailyResolved(tickets, agentName, windowDays) {
     };
   });
 
-  return { labels: days, datasets, agentCount: ranked.length, shown: datasets.length };
+  return { labels: days, datasets, agentCount: ranked.length, shown: datasets.length, unnamed };
+}
+
+// Average tickets resolved per week, per agent (bar chart data).
+function agentWeeklyAvg(tickets, agentName, windowDays) {
+  const inRange = new Set(dayRange(windowDays));
+  const totals = new Map(); // responder_id -> resolved count in window
+  for (const t of tickets) {
+    const st = t.stats || {};
+    const iso = st.resolved_at || st.closed_at;
+    if (!iso || !t.responder_id) continue;
+    if (!inRange.has(iso.slice(0, 10))) continue;
+    totals.set(t.responder_id, (totals.get(t.responder_id) || 0) + 1);
+  }
+  const weeks = Math.max(windowDays / 7, 1);
+  const ranked = [...totals.entries()]
+    .map(([id, n]) => ({ id, avg: Math.round((n / weeks) * 10) / 10 }))
+    .sort((a, b) => b.avg - a.avg);
+  return {
+    labels: ranked.map((a) => agentName.get(a.id) || `Agent ${a.id}`),
+    data: ranked.map((a) => a.avg),
+  };
 }
 
 function aggregate(tickets, groups, agents, windowDays) {
   const groupName = new Map(groups.map((g) => [g.id, g.name]));
-  const agentName = new Map(agents.map((a) => [a.id, (a.contact && a.contact.name) || a.name || `Agent ${a.id}`]));
+  const agentName = new Map(agents.map((a) => [a.id, (a.contact && a.contact.name) || a.name]));
+  // Manual overrides win — this is how names appear when the API can't list agents.
+  for (const [id, name] of Object.entries(getAgentMap())) {
+    if (name) agentName.set(Number(id), name);
+  }
 
   const byStatus = countBy(tickets, (t) => STATUS_MAP[t.status] || `Status ${t.status}`);
   const byPriority = countBy(tickets, (t) => PRIORITY_MAP[t.priority] || `P${t.priority}`);
@@ -219,9 +255,15 @@ function aggregate(tickets, groups, agents, windowDays) {
 
   const statusCount = (name) => byStatus.get(name) || 0;
 
+  // Distinct agent IDs seen as responders, most active first — used to
+  // pre-fill the manual name map in Settings.
+  const seenById = countBy(tickets.filter((t) => t.responder_id), (t) => t.responder_id);
+  const agentsSeen = [...seenById.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+
   return {
     total: tickets.length,
     capped: Boolean(tickets.capped),
+    agentsSeen,
     kpis: {
       total: tickets.length,
       open: statusCount("Open"),
@@ -232,6 +274,7 @@ function aggregate(tickets, groups, agents, windowDays) {
     byStatus, byPriority, bySource, byGroup, byAgent,
     volume: { labels: days, data: days.map((d) => perDay.get(d)) },
     agentDaily: agentDailyResolved(tickets, agentName, windowDays),
+    agentWeekly: agentWeeklyAvg(tickets, agentName, windowDays),
   };
 }
 
@@ -284,6 +327,15 @@ function renderCharts(agg) {
       interaction: { mode: "index", intersect: false },
       scales: axisOpts,
     },
+  });
+
+  drawChart("chartAgentWeekly", {
+    type: "bar",
+    data: {
+      labels: agg.agentWeekly.labels,
+      datasets: [{ label: "Avg / week", data: agg.agentWeekly.data, backgroundColor: "#4f8cff" }],
+    },
+    options: { ...commonOpts, indexAxis: "y", plugins: { legend: { display: false } }, scales: axisOpts },
   });
 
   const status = mapToArrays(agg.byStatus, ["Open", "Pending", "Resolved", "Closed"]);
@@ -356,23 +408,22 @@ async function loadDashboard() {
     // Groups and agents are used to label IDs. They may require higher
     // permissions than tickets, so load them tolerantly and report failures
     // instead of silently showing raw IDs.
-    let groups = [], agents = [];
+    let groups = [], agents = [], agentsApiFailed = false;
     const warnings = [];
     const [gRes, aRes] = await Promise.allSettled([fetchGroups(), fetchAgents()]);
     if (gRes.status === "fulfilled") groups = gRes.value;
-    else warnings.push(`group names failed (${gRes.reason.message})`);
-    if (aRes.status === "fulfilled") {
-      agents = aRes.value;
-      if (agents.length === 0) warnings.push("agent names: the agents list came back empty — this API key probably can't list agents (use an admin's API key, or I can add a manual name map)");
-    } else {
-      warnings.push(`agent names failed: ${aRes.reason.message}`);
-    }
+    else warnings.push(`group names unavailable (${gRes.reason.message})`);
+    if (aRes.status === "fulfilled") agents = aRes.value;
+    else agentsApiFailed = true;
 
     const tickets = await fetchTickets(windowDays, (n) => showStatus(`Loaded ${n} tickets…`, "info"));
 
     const agg = aggregate(tickets, groups, agents, windowDays);
     renderKpis(agg.kpis);
     renderCharts(agg);
+
+    // Remember the agent IDs that showed up, so Settings can pre-fill them.
+    localStorage.setItem(LS.seenAgents, JSON.stringify(agg.agentsSeen));
 
     if (tickets.length === 0) {
       showStatus(`No tickets updated in the last ${windowDays} days.`, "info");
@@ -383,9 +434,12 @@ async function loadDashboard() {
     const ad = agg.agentDaily;
     if (ad.agentCount > ad.shown) msg += ` Agent chart shows the top ${ad.shown} of ${ad.agentCount} agents.`;
     if (agg.capped) msg += " Capped at the fetch limit — narrow the window for full accuracy.";
+    if (ad.unnamed > 0) {
+      warnings.push(`${ad.unnamed} agent(s) show IDs${agentsApiFailed ? " (this key can't list agents)" : ""} — set names in Settings → Agent names`);
+    }
 
     if (warnings.length) {
-      showStatus(`${msg}  ⚠ ${warnings.join("; ")}.`, "error");
+      showStatus(`${msg}  ⚠ ${warnings.join("; ")}.`, "info");
     } else {
       showStatus(msg, "success");
       setTimeout(() => clearStatus(), 4000);
@@ -410,9 +464,42 @@ function openSettings() {
   $("#apiKeyInput").value = s.apiKey;
   $("#proxyInput").value = s.proxy === DEFAULT_PROXY ? "" : s.proxy;
   $("#testResult").className = "test-result hidden";
+  buildAgentMapRows();
   $("#settingsModal").classList.remove("hidden");
 }
 function closeSettings() { $("#settingsModal").classList.add("hidden"); }
+
+/* ---------- manual agent name map ---------- */
+function addAgentMapRow(id = "", name = "") {
+  const row = el("div", "agent-map-row");
+  const idIn = el("input", "am-id");
+  idIn.placeholder = "Agent ID"; idIn.value = id; idIn.setAttribute("inputmode", "numeric");
+  const nameIn = el("input", "am-name");
+  nameIn.placeholder = "Name"; nameIn.value = name;
+  row.appendChild(idIn);
+  row.appendChild(nameIn);
+  $("#agentMapRows").appendChild(row);
+}
+function buildAgentMapRows() {
+  const container = $("#agentMapRows");
+  container.innerHTML = "";
+  const map = getAgentMap();
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem(LS.seenAgents) || "[]"); } catch { seen = []; }
+  // Show every ID we've seen plus any already mapped, seen-first.
+  const ids = [...new Set([...seen.map(String), ...Object.keys(map)])];
+  if (ids.length === 0) { addAgentMapRow(); return; }
+  for (const id of ids) addAgentMapRow(id, map[id] || "");
+}
+function readAgentMap() {
+  const map = {};
+  for (const row of document.querySelectorAll("#agentMapRows .agent-map-row")) {
+    const id = row.querySelector(".am-id").value.trim();
+    const name = row.querySelector(".am-name").value.trim();
+    if (id && name) map[id] = name;
+  }
+  return map;
+}
 
 function readSettingsForm() {
   return {
@@ -462,6 +549,7 @@ function init() {
     const inp = $("#apiKeyInput");
     inp.type = inp.type === "password" ? "text" : "password";
   });
+  $("#addAgentRow").addEventListener("click", () => addAgentMapRow());
   $("#saveBtn").addEventListener("click", () => {
     const form = readSettingsForm();
     if (!form.domain || !form.apiKey) {
@@ -471,6 +559,7 @@ function init() {
       return;
     }
     persist(form);
+    localStorage.setItem(LS.agentMap, JSON.stringify(readAgentMap()));
     closeSettings();
     loadDashboard();
   });

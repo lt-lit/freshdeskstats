@@ -189,6 +189,11 @@ main { padding: 22px; max-width: 1200px; margin: 0 auto; }
 .key-row input { flex: 1; }
 .advanced summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
 .advanced .field { margin-top: 12px; }
+.btn-small { padding: 5px 10px; font-size: 13px; align-self: flex-start; }
+.agent-map { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; }
+.agent-map-row { display: flex; gap: 8px; }
+.agent-map-row .am-id { flex: 0 0 42%; font-variant-numeric: tabular-nums; }
+.agent-map-row .am-name { flex: 1; }
 .test-result { font-size: 13px; padding: 10px 12px; border-radius: 8px; }
 .test-result.ok { background: rgba(53, 192, 127, 0.14); color: #b7f0d4; }
 .test-result.bad { background: rgba(244, 91, 107, 0.14); color: #ffc6cd; }
