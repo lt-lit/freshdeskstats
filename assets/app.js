@@ -138,7 +138,9 @@ async function fetchPaged(basePath, { perPage = 100, maxPages = 50, onProgress }
 async function fetchTickets(windowDays, onProgress) {
   const since = new Date(Date.now() - windowDays * 86400000).toISOString();
   const path = `/api/v2/tickets?updated_since=${encodeURIComponent(since)}&include=stats&order_by=updated_at&order_type=asc`;
-  return fetchPaged(path, { onProgress });
+  // Freshdesk caps list pagination at 300 pages (30k tickets); allow the full
+  // range so a 12-month window isn't silently truncated for most desks.
+  return fetchPaged(path, { onProgress, maxPages: 300 });
 }
 async function fetchGroups() {
   return fetchPaged("/api/v2/groups", { maxPages: 10 });
