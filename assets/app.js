@@ -29,6 +29,13 @@ const SOURCE_MAP = {
 const PALETTE = ["#4f8cff", "#7c5cff", "#35c07f", "#f0b43f", "#f45b6b",
   "#3fd0d4", "#c46bff", "#ff9f5b", "#6bd08a", "#9aa3b2"];
 
+// Distinct color per index — palette first, then spread hues by golden angle.
+function colorFor(i) {
+  if (i < PALETTE.length) return PALETTE[i];
+  const hue = Math.round((i * 137.508) % 360);
+  return `hsl(${hue} 65% 62%)`;
+}
+
 /* ---------- small DOM helpers ---------- */
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -114,7 +121,7 @@ async function fetchPaged(basePath, { perPage = 100, maxPages = 50, onProgress }
 
 async function fetchTickets(windowDays, onProgress) {
   const since = new Date(Date.now() - windowDays * 86400000).toISOString();
-  const path = `/api/v2/tickets?updated_since=${encodeURIComponent(since)}&order_by=updated_at&order_type=asc`;
+  const path = `/api/v2/tickets?updated_since=${encodeURIComponent(since)}&include=stats&order_by=updated_at&order_type=asc`;
   return fetchPaged(path, { onProgress });
 }
 async function fetchGroups() {
@@ -139,7 +146,54 @@ function topN(map, n) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
 }
 
-function aggregate(tickets, groups, agents) {
+// Build a list of the last `windowDays` calendar days as YYYY-MM-DD (UTC).
+function dayRange(windowDays) {
+  const days = [];
+  for (let i = windowDays - 1; i >= 0; i--) {
+    days.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+// Tickets each agent resolved, per day — one dataset (line) per agent.
+function agentDailyResolved(tickets, agentName, windowDays) {
+  const days = dayRange(windowDays);
+  const inRange = new Set(days);
+  const counts = new Map(); // responder_id -> Map(day -> count)
+  const totals = new Map(); // responder_id -> total resolved in window
+
+  for (const t of tickets) {
+    const st = t.stats || {};
+    const iso = st.resolved_at || st.closed_at; // the day the ticket was "done"
+    if (!iso || !t.responder_id) continue;
+    const day = iso.slice(0, 10);
+    if (!inRange.has(day)) continue; // resolved outside the window
+    if (!counts.has(t.responder_id)) counts.set(t.responder_id, new Map());
+    const m = counts.get(t.responder_id);
+    m.set(day, (m.get(day) || 0) + 1);
+    totals.set(t.responder_id, (totals.get(t.responder_id) || 0) + 1);
+  }
+
+  const MAX_LINES = 12;
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  const datasets = ranked.slice(0, MAX_LINES).map(([aid], i) => {
+    const m = counts.get(aid);
+    const color = colorFor(i);
+    return {
+      label: agentName.get(aid) || `Agent ${aid}`,
+      data: days.map((d) => m.get(d) || 0),
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 2,
+      pointRadius: 2,
+      tension: 0.25,
+    };
+  });
+
+  return { labels: days, datasets, agentCount: ranked.length, shown: datasets.length };
+}
+
+function aggregate(tickets, groups, agents, windowDays) {
   const groupName = new Map(groups.map((g) => [g.id, g.name]));
   const agentName = new Map(agents.map((a) => [a.id, (a.contact && a.contact.name) || a.name || `Agent ${a.id}`]));
 
@@ -171,6 +225,7 @@ function aggregate(tickets, groups, agents) {
     },
     byStatus, byPriority, bySource, byGroup, byAgent,
     volume: { labels: days, data: days.map((d) => perDay.get(d)) },
+    agentDaily: agentDailyResolved(tickets, agentName, windowDays),
   };
 }
 
@@ -215,6 +270,16 @@ function mapToArrays(map, order) {
 }
 
 function renderCharts(agg) {
+  drawChart("chartAgentDaily", {
+    type: "line",
+    data: { labels: agg.agentDaily.labels, datasets: agg.agentDaily.datasets },
+    options: {
+      ...commonOpts,
+      interaction: { mode: "index", intersect: false },
+      scales: axisOpts,
+    },
+  });
+
   const status = mapToArrays(agg.byStatus, ["Open", "Pending", "Resolved", "Closed"]);
   drawChart("chartStatus", {
     type: "doughnut",
@@ -287,15 +352,17 @@ async function loadDashboard() {
     if (tickets.length === 0) {
       showStatus(`No tickets updated in the last ${windowDays} days.`, "info");
       renderKpis({ total: 0, open: 0, pending: 0, resolved: 0, closed: 0 });
-      renderCharts(aggregate([], groups, agents));
+      renderCharts(aggregate([], groups, agents, windowDays));
       return;
     }
 
-    const agg = aggregate(tickets, groups, agents);
+    const agg = aggregate(tickets, groups, agents, windowDays);
     renderKpis(agg.kpis);
     renderCharts(agg);
 
     let msg = `Showing ${agg.total} tickets updated in the last ${windowDays} days.`;
+    const ad = agg.agentDaily;
+    if (ad.agentCount > ad.shown) msg += ` Agent chart shows the top ${ad.shown} of ${ad.agentCount} agents.`;
     if (agg.capped) msg += " (Capped at the fetch limit — narrow the window for full accuracy.)";
     showStatus(msg, agg.capped ? "info" : "success");
     setTimeout(() => { if (!agg.capped) clearStatus(); }, 4000);

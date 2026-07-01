@@ -145,6 +145,7 @@ main { padding: 22px; max-width: 1200px; margin: 0 auto; }
   min-height: 260px;
 }
 .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.card-hint { margin: -6px 0 12px; font-size: 12px; color: var(--text-dim); }
 .card-wide { grid-column: 1 / -1; }
 .card canvas { max-height: 300px; }
 
