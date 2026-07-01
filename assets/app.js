@@ -88,7 +88,15 @@ async function fdFetch(path) {
       continue;
     }
     if (res.status === 401) throw new ApiError("Invalid API key (401). Check the key in Settings.", res.status);
-    if (res.status === 403) throw new ApiError("Proxy refused this origin (403). The site's URL isn't in the Worker's allowlist.", res.status);
+    if (res.status === 403) {
+      // Distinguish the Worker's own origin rejection from a Freshdesk
+      // permission denial (both are 403, but they mean very different things).
+      const body = await res.text().catch(() => "");
+      if (body.includes("Forbidden origin")) {
+        throw new ApiError("Proxy blocked this site's origin (403) — add the site URL to the Worker's allowlist.", 403);
+      }
+      throw new ApiError("Freshdesk denied access to this endpoint (403) — this API key's agent lacks permission for it (an admin key is usually required).", 403);
+    }
     if (res.status === 404) throw new ApiError("Not found (404). Check the Freshdesk domain in Settings.", res.status);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
