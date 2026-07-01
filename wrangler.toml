@@ -1,0 +1,10 @@
+# Cloudflare Workers configuration.
+# `name` MUST match the Worker's name in the Cloudflare dashboard
+# (freshdeskstats), or the Git build fails.
+name = "freshdeskstats"
+main = "worker/freshdesk-proxy.js"
+compatibility_date = "2025-01-01"
+
+# The Worker is a single plain-JS file with no dependencies and no build
+# step, so no build command is needed. Cloudflare's default deploy command
+# (npx wrangler deploy) uploads worker/freshdesk-proxy.js directly.
