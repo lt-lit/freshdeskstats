@@ -210,25 +210,51 @@ function agentDailyResolved(tickets, agentName, windowDays) {
   return { labels: days, datasets, agentCount: ranked.length, shown: datasets.length, unnamed };
 }
 
-// Average tickets resolved per week, per agent (bar chart data).
-function agentWeeklyAvg(tickets, agentName, windowDays) {
-  const inRange = new Set(dayRange(windowDays));
-  const totals = new Map(); // responder_id -> resolved count in window
+// Monday (UTC) of the week containing an ISO date, as YYYY-MM-DD.
+function weekStartUTC(iso) {
+  const d = new Date(iso.slice(0, 10) + "T00:00:00Z");
+  const dow = d.getUTCDay();               // 0=Sun..6=Sat
+  d.setUTCDate(d.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
+  return d.toISOString().slice(0, 10);
+}
+// Consecutive week-start dates spanning the window.
+function weekRange(windowDays) {
+  const firstIso = new Date(Date.now() - (windowDays - 1) * 86400000).toISOString();
+  const endWeek = weekStartUTC(new Date().toISOString());
+  const weeks = [];
+  const cur = new Date(weekStartUTC(firstIso) + "T00:00:00Z");
+  for (let i = 0; i < 200; i++) {
+    const s = cur.toISOString().slice(0, 10);
+    weeks.push(s);
+    if (s === endWeek) break;
+    cur.setUTCDate(cur.getUTCDate() + 7);
+  }
+  return weeks;
+}
+function weekLabel(iso) {
+  return new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+// Per-agent weekly resolved counts — for the "select an agent" trend chart.
+function agentWeekly(tickets, agentName, windowDays) {
+  const weeks = weekRange(windowDays);
+  const idx = new Map(weeks.map((w, i) => [w, i]));
+  const byAgent = new Map(); // responder_id -> counts array aligned to weeks
+  const totals = new Map();
   for (const t of tickets) {
     const st = t.stats || {};
     const iso = st.resolved_at || st.closed_at;
     if (!iso || !t.responder_id) continue;
-    if (!inRange.has(iso.slice(0, 10))) continue;
+    const i = idx.get(weekStartUTC(iso));
+    if (i == null) continue; // resolved outside the window
+    if (!byAgent.has(t.responder_id)) byAgent.set(t.responder_id, new Array(weeks.length).fill(0));
+    byAgent.get(t.responder_id)[i] += 1;
     totals.set(t.responder_id, (totals.get(t.responder_id) || 0) + 1);
   }
-  const weeks = Math.max(windowDays / 7, 1);
-  const ranked = [...totals.entries()]
-    .map(([id, n]) => ({ id, avg: Math.round((n / weeks) * 10) / 10 }))
-    .sort((a, b) => b.avg - a.avg);
-  return {
-    labels: ranked.map((a) => agentName.get(a.id) || `Agent ${a.id}`),
-    data: ranked.map((a) => a.avg),
-  };
+  const agents = [...totals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, total]) => ({ id, total, name: agentName.get(id) || `Agent ${id}` }));
+  return { weeks, weekLabels: weeks.map(weekLabel), byAgent, agents };
 }
 
 function aggregate(tickets, groups, agents, windowDays) {
@@ -274,7 +300,7 @@ function aggregate(tickets, groups, agents, windowDays) {
     byStatus, byPriority, bySource, byGroup, byAgent,
     volume: { labels: days, data: days.map((d) => perDay.get(d)) },
     agentDaily: agentDailyResolved(tickets, agentName, windowDays),
-    agentWeekly: agentWeeklyAvg(tickets, agentName, windowDays),
+    agentWeekly: agentWeekly(tickets, agentName, windowDays),
   };
 }
 
@@ -329,15 +355,6 @@ function renderCharts(agg) {
     },
   });
 
-  drawChart("chartAgentWeekly", {
-    type: "bar",
-    data: {
-      labels: agg.agentWeekly.labels,
-      datasets: [{ label: "Avg / week", data: agg.agentWeekly.data, backgroundColor: "#4f8cff" }],
-    },
-    options: { ...commonOpts, indexAxis: "y", plugins: { legend: { display: false } }, scales: axisOpts },
-  });
-
   const status = mapToArrays(agg.byStatus, ["Open", "Pending", "Resolved", "Closed"]);
   drawChart("chartStatus", {
     type: "doughnut",
@@ -380,6 +397,49 @@ function renderCharts(agg) {
   });
 }
 
+/* ---------- selected-agent weekly trend ---------- */
+let lastAgg = null; // keep the last aggregation so the picker re-renders without refetching
+
+function populateAgentSelect() {
+  const sel = $("#agentSelect");
+  const prev = sel.value;
+  const agents = (lastAgg && lastAgg.agentWeekly.agents) || [];
+  sel.innerHTML = "";
+  for (const a of agents) {
+    const opt = document.createElement("option");
+    opt.value = String(a.id);
+    opt.textContent = `${a.name} (${a.total})`;
+    sel.appendChild(opt);
+  }
+  sel.disabled = agents.length === 0;
+  if (prev && agents.some((a) => String(a.id) === prev)) sel.value = prev;
+}
+
+function renderAgentWeeklyChart() {
+  if (!lastAgg) return;
+  const aw = lastAgg.agentWeekly;
+  const sel = $("#agentSelect");
+  const id = sel.value ? Number(sel.value) : (aw.agents[0] && aw.agents[0].id);
+  const agent = aw.agents.find((a) => a.id === id);
+  const series = (id != null && aw.byAgent.get(id)) || new Array(aw.weeks.length).fill(0);
+  drawChart("chartAgentWeekly", {
+    type: "line",
+    data: {
+      labels: aw.weekLabels,
+      datasets: [{
+        label: (agent ? agent.name : "—") + " — resolved / week",
+        data: series,
+        borderColor: "#4f8cff",
+        backgroundColor: "rgba(79,140,255,0.15)",
+        fill: true,
+        tension: 0.25,
+        pointRadius: 3,
+      }],
+    },
+    options: { ...commonOpts, scales: axisOpts },
+  });
+}
+
 /* ---------- status messages ---------- */
 function showStatus(msg, kind = "info") {
   const bar = $("#statusBar");
@@ -419,8 +479,11 @@ async function loadDashboard() {
     const tickets = await fetchTickets(windowDays, (n) => showStatus(`Loaded ${n} tickets…`, "info"));
 
     const agg = aggregate(tickets, groups, agents, windowDays);
+    lastAgg = agg;
     renderKpis(agg.kpis);
     renderCharts(agg);
+    populateAgentSelect();
+    renderAgentWeeklyChart();
 
     // Remember the agent IDs that showed up, so Settings can pre-fill them.
     localStorage.setItem(LS.seenAgents, JSON.stringify(agg.agentsSeen));
@@ -565,6 +628,7 @@ function init() {
   });
   $("#refreshBtn").addEventListener("click", loadDashboard);
   $("#rangeSelect").addEventListener("change", () => { if (hasCredentials()) loadDashboard(); });
+  $("#agentSelect").addEventListener("change", renderAgentWeeklyChart);
 
   if (hasCredentials()) loadDashboard();
   else showEmptyState();

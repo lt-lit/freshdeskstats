@@ -53,8 +53,11 @@
           <canvas id="chartAgentDaily"></canvas>
         </div>
         <div class="card card-wide">
-          <h3>Average tickets resolved / week, by agent</h3>
-          <p class="card-hint">Tickets each agent resolved in the window ÷ number of weeks in the window.</p>
+          <div class="card-head">
+            <h3>Tickets per week — selected agent</h3>
+            <select id="agentSelect" class="agent-select" title="Choose an agent"></select>
+          </div>
+          <p class="card-hint">Weekly resolved-ticket count for the chosen agent, week by week across the window.</p>
           <canvas id="chartAgentWeekly"></canvas>
         </div>
         <div class="card">
